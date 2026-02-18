@@ -173,8 +173,7 @@ async function resolveClient(): Promise<MattermostClient> {
 	}
 
 	throw new Error(
-		"Mattermost auth required. Set token (PAT) or username+password in config, " +
-			"or set MATTERMOST_TOKEN env var.",
+		"Mattermost auth required. Set token (PAT) or username+password in config, " + "or set MATTERMOST_TOKEN env var.",
 	);
 }
 
@@ -313,8 +312,7 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 		});
 
 		// Truncate if over the Mattermost message limit
-		const finalText =
-			response.length > MM_MSG_LIMIT ? response.substring(0, MM_MSG_LIMIT - 3) + "..." : response;
+		const finalText = response.length > MM_MSG_LIMIT ? `${response.substring(0, MM_MSG_LIMIT - 3)}...` : response;
 
 		await client.updatePost(thinkingPost.id, finalText);
 	} catch (error: unknown) {
@@ -379,10 +377,9 @@ const plugin: WOPRPlugin = {
 		description: "Mattermost integration via REST API v4 and WebSocket",
 		capabilities: ["channel"],
 		requires: {
-			env: [],
+			env: ["MATTERMOST_URL", "MATTERMOST_TOKEN"],
 			network: {
 				outbound: true,
-				hosts: [],
 			},
 		},
 		provides: {

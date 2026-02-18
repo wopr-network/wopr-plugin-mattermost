@@ -159,7 +159,7 @@ export class MattermostClient {
 	}
 
 	private doConnect(): void {
-		const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/api/v4/websocket";
+		const wsUrl = `${this.baseUrl.replace(/^http/, "ws")}/api/v4/websocket`;
 		this.ws = new WebSocket(wsUrl);
 
 		this.ws.on("open", () => {
@@ -198,7 +198,7 @@ export class MattermostClient {
 
 	private scheduleReconnect(): void {
 		if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
-		const delay = this.reconnectBaseDelay * Math.pow(2, this.reconnectAttempts);
+		const delay = this.reconnectBaseDelay * 2 ** this.reconnectAttempts;
 		this.reconnectAttempts++;
 		this.reconnectTimer = setTimeout(() => this.doConnect(), delay);
 	}

@@ -32,7 +32,7 @@ src/
 
 ## Plugin Contract
 
-Imports only from local `./types.js`. Never import from `@wopr-network/wopr` core.
+Imports core plugin types from `@wopr-network/plugin-types`. Mattermost-specific types are in `./types.js`. Never import from `@wopr-network/wopr` core.
 
 ## Issue Tracking
 
