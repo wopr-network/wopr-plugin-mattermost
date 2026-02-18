@@ -1,0 +1,72 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-check:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run lint
+      - run: bun run typecheck
+
+  build:
+    runs-on: [self-hosted, Linux, X64]
+    needs: lint-and-check
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ matrix.node-version }}" }
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-node-${{ matrix.node-version }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  validate-package:
+    runs-on: [self-hosted, Linux, X64]
+    needs: build
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ matrix.node-version }}" }
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --production
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-node-${{ matrix.node-version }}
+          path: dist/
+      - run: test -f dist/index.js && test -f dist/index.d.ts
+      - run: node --input-type=module -e "import('./dist/index.js').then(() => console.log('ESM OK'))"
+      - run: npm pack --dry-run
+
+  test:
+    runs-on: [self-hosted, Linux, X64]
+    needs: lint-and-check
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run test
