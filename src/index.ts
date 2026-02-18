@@ -1,15 +1,8 @@
 import path from "node:path";
+import type { ChannelProvider, ConfigSchema, WOPRPlugin, WOPRPluginContext } from "@wopr-network/plugin-types";
 import winston from "winston";
 import { MattermostClient } from "./mattermost-client.js";
-import type {
-	AgentIdentity,
-	MattermostConfig,
-	MattermostPost,
-	MattermostWsEvent,
-	WOPRPlugin,
-	WOPRPluginContext,
-} from "./types.js";
-import type { ConfigSchema } from "./types.js";
+import type { AgentIdentity, MattermostConfig, MattermostPost, MattermostWsEvent } from "./types.js";
 
 // Module-level state (same pattern as Slack/Telegram plugins)
 let ctx: WOPRPluginContext | null = null;
@@ -346,11 +339,70 @@ async function handleWsEvent(event: MattermostWsEvent): Promise<void> {
 	}
 }
 
+// ChannelProvider implementation
+const channelProvider: ChannelProvider = {
+	id: "mattermost",
+
+	registerCommand() {
+		// Slash commands handled via commandPrefix in message text
+	},
+	unregisterCommand() {},
+	getCommands() {
+		return [];
+	},
+
+	addMessageParser() {},
+	removeMessageParser() {},
+	getMessageParsers() {
+		return [];
+	},
+
+	async send(channel: string, content: string): Promise<void> {
+		if (!client) throw new Error("Mattermost client not initialized");
+		await client.createPost(channel, content);
+	},
+
+	getBotUsername(): string {
+		return botUsername;
+	},
+};
+
 // Plugin definition
 const plugin: WOPRPlugin = {
 	name: "wopr-plugin-mattermost",
 	version: "1.0.0",
 	description: "Mattermost integration via REST API v4 and WebSocket",
+
+	manifest: {
+		name: "wopr-plugin-mattermost",
+		version: "1.0.0",
+		description: "Mattermost integration via REST API v4 and WebSocket",
+		capabilities: ["channel"],
+		requires: {
+			env: [],
+			network: {
+				outbound: true,
+				hosts: [],
+			},
+		},
+		provides: {
+			capabilities: [
+				{
+					type: "channel",
+					id: "mattermost",
+					displayName: "Mattermost",
+					tier: "byok",
+				},
+			],
+		},
+		icon: "🟦",
+		category: "communication",
+		tags: ["mattermost", "chat", "self-hosted", "channel"],
+		lifecycle: {
+			shutdownBehavior: "drain",
+			shutdownTimeoutMs: 30_000,
+		},
+	},
 
 	async init(context: WOPRPluginContext): Promise<void> {
 		ctx = context;
@@ -368,6 +420,9 @@ const plugin: WOPRPlugin = {
 		if (!config.serverUrl && process.env.MATTERMOST_URL) {
 			config.serverUrl = process.env.MATTERMOST_URL;
 		}
+
+		// Register channel provider so other plugins can route to Mattermost
+		ctx.registerChannelProvider(channelProvider);
 
 		if (config.enabled === false) {
 			logger.info("Mattermost plugin disabled in config");
@@ -411,7 +466,10 @@ const plugin: WOPRPlugin = {
 			client.disconnectWebSocket();
 			client = null;
 		}
-		ctx = null;
+		if (ctx) {
+			ctx.unregisterChannelProvider("mattermost");
+			ctx = null;
+		}
 		botUserId = "";
 		botUsername = "";
 		logger?.info("Mattermost plugin stopped");

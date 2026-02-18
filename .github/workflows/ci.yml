@@ -16,8 +16,8 @@ jobs:
         with: { persist-credentials: false }
       - uses: oven-sh/setup-bun@v2
       - run: bun install
-      - run: bun run lint || echo "No lint script, skipping"
-      - run: bun run typecheck || bunx --no-install tsc --noEmit
+      - run: bun run lint
+      - run: bun run typecheck
 
   build:
     runs-on: [self-hosted, Linux, X64]
@@ -69,4 +69,4 @@ jobs:
         with: { persist-credentials: false }
       - uses: oven-sh/setup-bun@v2
       - run: bun install
-      - run: bun run test || echo "No test script, skipping"
+      - run: bun run test

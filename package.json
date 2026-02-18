@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@wopr-network/plugin-types": "^0.2.1",
     "winston": "^3.11.0",
     "ws": "^8.18.0"
   },
@@ -30,7 +31,9 @@
   "peerDependencies": {
     "wopr": ">=0.0.1"
   },
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "files": ["dist"],
   "keywords": ["wopr", "plugin", "mattermost", "bot", "chat", "self-hosted"]
 }

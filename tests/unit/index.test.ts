@@ -38,6 +38,8 @@ const plugin = (await import("../../src/index.js")).default;
 function makeCtx(overrides: Partial<Record<string, unknown>> = {}) {
 	return {
 		registerConfigSchema: vi.fn(),
+		registerChannelProvider: vi.fn(),
+		unregisterChannelProvider: vi.fn(),
 		getConfig: vi.fn().mockReturnValue({}),
 		getAgentIdentity: vi.fn().mockResolvedValue({ name: "WOPR" }),
 		logMessage: vi.fn(),
@@ -62,6 +64,17 @@ describe("plugin export", () => {
 	it("has shutdown function", () => {
 		expect(typeof plugin.shutdown).toBe("function");
 	});
+
+	it("has manifest with required fields", () => {
+		expect(plugin.manifest).toBeDefined();
+		expect(plugin.manifest?.capabilities).toContain("channel");
+		expect(plugin.manifest?.icon).toBeDefined();
+		expect(plugin.manifest?.category).toBeDefined();
+		expect(plugin.manifest?.tags).toBeDefined();
+		expect(plugin.manifest?.lifecycle).toBeDefined();
+		expect(plugin.manifest?.provides?.capabilities).toHaveLength(1);
+		expect(plugin.manifest?.provides?.capabilities[0].type).toBe("channel");
+	});
 });
 
 describe("plugin.init", () => {
@@ -83,6 +96,16 @@ describe("plugin.init", () => {
 		expect(ctx.registerConfigSchema).toHaveBeenCalledWith(
 			"wopr-plugin-mattermost",
 			expect.objectContaining({ title: expect.any(String) }),
+		);
+	});
+
+	it("calls registerChannelProvider on init", async () => {
+		const ctx = makeCtx({
+			getConfig: vi.fn().mockReturnValue({ enabled: false }),
+		});
+		await plugin.init!(ctx as any);
+		expect(ctx.registerChannelProvider).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "mattermost" }),
 		);
 	});
 
@@ -189,6 +212,30 @@ describe("plugin.shutdown", () => {
 		// Should not throw
 		await expect(plugin.shutdown!()).resolves.not.toThrow();
 
+		vi.unstubAllGlobals();
+	});
+
+	it("calls unregisterChannelProvider on shutdown", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({
+				ok: true,
+				json: () => Promise.resolve({ id: "bot1", username: "wopr-bot" }),
+				headers: { get: () => null },
+			}),
+		);
+
+		const ctx = makeCtx({
+			getConfig: vi.fn().mockReturnValue({
+				serverUrl: "https://mm.example.com",
+				token: "pat-token-123",
+			}),
+		});
+
+		await plugin.init!(ctx as any);
+		await plugin.shutdown!();
+
+		expect(ctx.unregisterChannelProvider).toHaveBeenCalledWith("mattermost");
 		vi.unstubAllGlobals();
 	});
 });
