@@ -46,5 +46,8 @@
     "bot",
     "chat",
     "self-hosted"
-  ]
+  ],
+  "release": {
+    "extends": "@wopr-network/semantic-release-config"
+  }
 }
