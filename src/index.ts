@@ -1,5 +1,12 @@
 import path from "node:path";
-import type { ChannelProvider, ConfigSchema, WOPRPlugin, WOPRPluginContext } from "@wopr-network/plugin-types";
+import type {
+	ChannelCommand,
+	ChannelMessageParser,
+	ChannelProvider,
+	ConfigSchema,
+	WOPRPlugin,
+	WOPRPluginContext,
+} from "@wopr-network/plugin-types";
 import winston from "winston";
 import { MattermostClient } from "./mattermost-client.js";
 import type { AgentIdentity, MattermostConfig, MattermostPost, MattermostWsEvent } from "./types.js";
@@ -12,7 +19,10 @@ let client: MattermostClient | null = null;
 let botUserId = "";
 let botUsername = "";
 let logger: winston.Logger | null = null;
-let wsUnsub: (() => void) | null = null;
+
+const cleanups: (() => void)[] = [];
+const registeredCommands: ChannelCommand[] = [];
+const registeredParsers: ChannelMessageParser[] = [];
 
 // Initialize winston logger
 function initLogger(): winston.Logger {
@@ -54,6 +64,7 @@ const configSchema: ConfigSchema = {
 			placeholder: "https://mattermost.example.com",
 			required: true,
 			description: "Your Mattermost server URL (no trailing slash)",
+			setupFlow: "paste",
 		},
 		{
 			name: "token",
@@ -61,6 +72,8 @@ const configSchema: ConfigSchema = {
 			label: "Bot Token (PAT)",
 			placeholder: "xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 			description: "Personal Access Token from Mattermost. Preferred auth method.",
+			secret: true,
+			setupFlow: "paste",
 		},
 		{
 			name: "username",
@@ -68,6 +81,7 @@ const configSchema: ConfigSchema = {
 			label: "Username",
 			placeholder: "wopr-bot",
 			description: "Alternative auth: bot username (used with password)",
+			setupFlow: "paste",
 		},
 		{
 			name: "password",
@@ -75,6 +89,8 @@ const configSchema: ConfigSchema = {
 			label: "Password",
 			placeholder: "...",
 			description: "Alternative auth: bot password (used with username)",
+			secret: true,
+			setupFlow: "paste",
 		},
 		{
 			name: "teamName",
@@ -145,8 +161,8 @@ async function refreshIdentity(): Promise<void> {
 	try {
 		const identity = await ctx.getAgentIdentity();
 		if (identity) agentIdentity = { ...agentIdentity, ...identity };
-	} catch (e) {
-		logger?.warn("Failed to refresh identity:", String(e));
+	} catch (error: unknown) {
+		logger?.warn("Failed to refresh identity:", String(error));
 	}
 }
 
@@ -234,7 +250,7 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 	let post: MattermostPost;
 	try {
 		post = typeof postData === "string" ? JSON.parse(postData) : (postData as MattermostPost);
-	} catch {
+	} catch (_error: unknown) {
 		return;
 	}
 
@@ -244,7 +260,7 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 		try {
 			const channel = await client.getChannel(post.channel_id);
 			channelType = channel.type;
-		} catch {
+		} catch (_error: unknown) {
 			channelType = "O";
 		}
 	}
@@ -262,7 +278,7 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 				from: user.username,
 				channel: { type: "mattermost", id: post.channel_id },
 			});
-		} catch {
+		} catch (_error: unknown) {
 			// non-critical
 		}
 		return;
@@ -275,7 +291,7 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 	try {
 		const user = await client.getUser(post.user_id);
 		senderUsername = user.username;
-	} catch {
+	} catch (_error: unknown) {
 		senderUsername = post.user_id;
 	}
 
@@ -299,8 +315,8 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 	let thinkingPost: MattermostPost;
 	try {
 		thinkingPost = await client.createPost(post.channel_id, "_Thinking..._", rootId);
-	} catch (err) {
-		logger?.error("Failed to post thinking message:", err);
+	} catch (error: unknown) {
+		logger?.error("Failed to post thinking message:", error);
 		return;
 	}
 
@@ -319,7 +335,7 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 		logger?.error("Inject failed:", String(error));
 		try {
 			await client.updatePost(thinkingPost.id, "Error processing your request. Please try again.");
-		} catch {
+		} catch (_error: unknown) {
 			// non-critical
 		}
 	}
@@ -341,18 +357,26 @@ async function handleWsEvent(event: MattermostWsEvent): Promise<void> {
 const channelProvider: ChannelProvider = {
 	id: "mattermost",
 
-	registerCommand() {
-		// Slash commands handled via commandPrefix in message text
+	registerCommand(cmd: ChannelCommand): void {
+		registeredCommands.push(cmd);
 	},
-	unregisterCommand() {},
-	getCommands() {
-		return [];
+	unregisterCommand(name: string): void {
+		const idx = registeredCommands.findIndex((c) => c.name === name);
+		if (idx !== -1) registeredCommands.splice(idx, 1);
+	},
+	getCommands(): ChannelCommand[] {
+		return [...registeredCommands];
 	},
 
-	addMessageParser() {},
-	removeMessageParser() {},
-	getMessageParsers() {
-		return [];
+	addMessageParser(parser: ChannelMessageParser): void {
+		registeredParsers.push(parser);
+	},
+	removeMessageParser(id: string): void {
+		const idx = registeredParsers.findIndex((p) => p.id === id);
+		if (idx !== -1) registeredParsers.splice(idx, 1);
+	},
+	getMessageParsers(): ChannelMessageParser[] {
+		return [...registeredParsers];
 	},
 
 	async send(channel: string, content: string): Promise<void> {
@@ -399,6 +423,7 @@ const plugin: WOPRPlugin = {
 			shutdownBehavior: "drain",
 			shutdownTimeoutMs: 30_000,
 		},
+		configSchema,
 	},
 
 	async init(context: WOPRPluginContext): Promise<void> {
@@ -407,6 +432,7 @@ const plugin: WOPRPlugin = {
 
 		// Register config schema first
 		ctx.registerConfigSchema("wopr-plugin-mattermost", configSchema);
+		cleanups.push(() => ctx?.unregisterConfigSchema?.("wopr-plugin-mattermost"));
 
 		// Load config — support nested (channels.mattermost) and flat patterns
 		type FullConfig = { channels?: { mattermost?: MattermostConfig } } & MattermostConfig;
@@ -420,6 +446,7 @@ const plugin: WOPRPlugin = {
 
 		// Register channel provider so other plugins can route to Mattermost
 		ctx.registerChannelProvider(channelProvider);
+		cleanups.push(() => ctx?.unregisterChannelProvider?.("mattermost"));
 
 		if (config.enabled === false) {
 			logger.info("Mattermost plugin disabled in config");
@@ -432,8 +459,8 @@ const plugin: WOPRPlugin = {
 		// Resolve auth and create client
 		try {
 			client = await resolveClient();
-		} catch (err) {
-			logger.warn("Mattermost auth not configured:", String(err));
+		} catch (error: unknown) {
+			logger.warn("Mattermost auth not configured:", String(error));
 			return;
 		}
 
@@ -443,34 +470,43 @@ const plugin: WOPRPlugin = {
 			botUserId = me.id;
 			botUsername = me.username;
 			logger.info(`Mattermost bot user: @${me.username} (${me.id})`);
-		} catch (err) {
-			logger.error("Failed to get bot user info:", err);
-			throw err;
+		} catch (error: unknown) {
+			logger.error("Failed to get bot user info:", error);
+			throw error;
 		}
 
 		// Connect WebSocket and register listener
-		wsUnsub = client.addMessageListener(handleWsEvent);
+		const wsUnsub = client.addMessageListener(handleWsEvent);
+		cleanups.push(wsUnsub);
 		client.connectWebSocket();
 		logger.info("Mattermost WebSocket connected");
 	},
 
 	async shutdown(): Promise<void> {
-		if (wsUnsub) {
-			wsUnsub();
-			wsUnsub = null;
+		// Drain all cleanups in reverse order
+		while (cleanups.length > 0) {
+			const fn = cleanups.pop();
+			try {
+				fn?.();
+			} catch (error: unknown) {
+				logger?.warn("Cleanup error:", String(error));
+			}
 		}
+
 		if (client) {
 			client.disconnectWebSocket();
 			client = null;
 		}
-		if (ctx) {
-			ctx.unregisterChannelProvider("mattermost");
-			ctx = null;
-		}
+
+		registeredCommands.length = 0;
+		registeredParsers.length = 0;
+
 		botUserId = "";
 		botUsername = "";
+		config = {};
 		logger?.info("Mattermost plugin stopped");
 		logger = null;
+		ctx = null;
 	},
 };
 
