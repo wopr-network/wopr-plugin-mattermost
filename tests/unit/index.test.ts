@@ -40,6 +40,7 @@ function makeCtx(overrides: Partial<Record<string, unknown>> = {}) {
 		registerConfigSchema: vi.fn(),
 		registerChannelProvider: vi.fn(),
 		unregisterChannelProvider: vi.fn(),
+		unregisterConfigSchema: vi.fn(),
 		getConfig: vi.fn().mockReturnValue({}),
 		getAgentIdentity: vi.fn().mockResolvedValue({ name: "WOPR" }),
 		logMessage: vi.fn(),
@@ -74,6 +75,33 @@ describe("plugin export", () => {
 		expect(plugin.manifest?.lifecycle).toBeDefined();
 		expect(plugin.manifest?.provides?.capabilities).toHaveLength(1);
 		expect(plugin.manifest?.provides?.capabilities[0].type).toBe("channel");
+	});
+
+	it("manifest has configSchema", () => {
+		expect(plugin.manifest?.configSchema).toBeDefined();
+		expect(plugin.manifest?.configSchema?.fields).toBeDefined();
+	});
+
+	it("config schema marks token and password as secret", () => {
+		const schema = plugin.manifest?.configSchema;
+		expect(schema).toBeDefined();
+
+		const tokenField = schema!.fields.find((f: any) => f.name === "token");
+		const passwordField = schema!.fields.find((f: any) => f.name === "password");
+
+		expect(tokenField?.secret).toBe(true);
+		expect(passwordField?.secret).toBe(true);
+	});
+
+	it("config schema has setupFlow on input fields", () => {
+		const schema = plugin.manifest?.configSchema;
+		expect(schema).toBeDefined();
+
+		const serverUrlField = schema!.fields.find((f: any) => f.name === "serverUrl");
+		const tokenField = schema!.fields.find((f: any) => f.name === "token");
+
+		expect(serverUrlField?.setupFlow).toBe("paste");
+		expect(tokenField?.setupFlow).toBe("paste");
 	});
 });
 
@@ -237,6 +265,82 @@ describe("plugin.shutdown", () => {
 
 		expect(ctx.unregisterChannelProvider).toHaveBeenCalledWith("mattermost");
 		vi.unstubAllGlobals();
+	});
+
+	it("drains all cleanups on shutdown including unregisterConfigSchema", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({
+				ok: true,
+				json: () => Promise.resolve({ id: "bot1", username: "wopr-bot" }),
+				headers: { get: () => null },
+			}),
+		);
+
+		const ctx = makeCtx({
+			getConfig: vi.fn().mockReturnValue({
+				serverUrl: "https://mm.example.com",
+				token: "pat-token-123",
+			}),
+			unregisterConfigSchema: vi.fn(),
+		});
+
+		await plugin.init!(ctx as any);
+		await plugin.shutdown!();
+
+		// Second shutdown should be safe (idempotent)
+		await plugin.shutdown!();
+
+		expect(ctx.unregisterConfigSchema).toHaveBeenCalledWith("wopr-plugin-mattermost");
+		vi.unstubAllGlobals();
+	});
+});
+
+describe("channelProvider", () => {
+	let channelProv: any;
+
+	beforeEach(async () => {
+		vi.stubGlobal("fetch", vi.fn());
+		const ctx = makeCtx({
+			getConfig: vi.fn().mockReturnValue({ enabled: false }),
+		});
+		await plugin.init!(ctx as any);
+		// Grab the channel provider from the registerChannelProvider call
+		channelProv = (ctx.registerChannelProvider as ReturnType<typeof vi.fn>).mock.calls[0][0];
+	});
+
+	afterEach(async () => {
+		vi.unstubAllGlobals();
+		vi.clearAllMocks();
+		await plugin.shutdown?.();
+	});
+
+	it("registers and retrieves commands", () => {
+		const cmd = { name: "test", description: "Test command", handler: vi.fn() };
+		channelProv.registerCommand(cmd);
+		expect(channelProv.getCommands()).toHaveLength(1);
+		expect(channelProv.getCommands()[0].name).toBe("test");
+	});
+
+	it("unregisters commands by name", () => {
+		const cmd = { name: "test", description: "Test command", handler: vi.fn() };
+		channelProv.registerCommand(cmd);
+		channelProv.unregisterCommand("test");
+		expect(channelProv.getCommands()).toHaveLength(0);
+	});
+
+	it("adds and retrieves message parsers", () => {
+		const parser = { id: "p1", pattern: /test/, handler: vi.fn() };
+		channelProv.addMessageParser(parser);
+		expect(channelProv.getMessageParsers()).toHaveLength(1);
+		expect(channelProv.getMessageParsers()[0].id).toBe("p1");
+	});
+
+	it("removes message parsers by ID", () => {
+		const parser = { id: "p1", pattern: /test/, handler: vi.fn() };
+		channelProv.addMessageParser(parser);
+		channelProv.removeMessageParser("p1");
+		expect(channelProv.getMessageParsers()).toHaveLength(0);
 	});
 });
 
