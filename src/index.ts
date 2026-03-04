@@ -9,7 +9,14 @@ import type {
 } from "@wopr-network/plugin-types";
 import winston from "winston";
 import { MattermostClient } from "./mattermost-client.js";
-import type { AgentIdentity, MattermostConfig, MattermostPost, MattermostWsEvent } from "./types.js";
+import type {
+	AgentIdentity,
+	ChannelNotificationCallbacks,
+	ChannelNotificationPayload,
+	MattermostConfig,
+	MattermostPost,
+	MattermostWsEvent,
+} from "./types.js";
 
 // Module-level state (same pattern as Slack/Telegram plugins)
 let ctx: WOPRPluginContext | null = null;
@@ -23,6 +30,15 @@ let logger: winston.Logger | null = null;
 const cleanups: (() => void)[] = [];
 const registeredCommands: ChannelCommand[] = [];
 const registeredParsers: ChannelMessageParser[] = [];
+const pendingNotifications = new Map<
+	string,
+	{
+		channelId: string;
+		ownerUserId: string;
+		callbacks: ChannelNotificationCallbacks;
+		timer: ReturnType<typeof setTimeout>;
+	}
+>();
 
 // Initialize winston logger
 function initLogger(): winston.Logger {
@@ -285,6 +301,35 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 	}
 
 	const isDM = isDMChannel(channelType);
+
+	// Handle !accept / !deny for pending notifications (only after shouldRespond)
+	const prefix = config.commandPrefix || "!";
+	const trimmedMsg = post.message.trim().toLowerCase();
+	if (trimmedMsg === `${prefix}accept` || trimmedMsg === `${prefix}deny`) {
+		// Skip bot/system posts for notification commands
+		if (post.type !== "" || post.user_id === botUserId) {
+			return;
+		}
+		const isAccept = trimmedMsg === `${prefix}accept`;
+		const key = `${post.channel_id}:${post.user_id}`;
+		const entry = pendingNotifications.get(key);
+		if (entry) {
+			try {
+				if (isAccept) {
+					await entry.callbacks.onAccept?.();
+				} else {
+					await entry.callbacks.onDeny?.();
+				}
+			} catch (error: unknown) {
+				logger?.error(`Error in notification ${isAccept ? "accept" : "deny"} callback:`, String(error));
+			} finally {
+				// Clean up after callback completes (success or error)
+				pendingNotifications.delete(key);
+				clearTimeout(entry.timer);
+			}
+			return;
+		}
+	}
 	const sessionKey = buildSessionKey(post.channel_id, isDM);
 
 	let senderUsername: string;
@@ -353,8 +398,17 @@ async function handleWsEvent(event: MattermostWsEvent): Promise<void> {
 	}
 }
 
+// Extended provider type with sendNotification
+interface MattermostChannelProvider extends ChannelProvider {
+	sendNotification(
+		channelId: string,
+		payload: ChannelNotificationPayload,
+		callbacks?: ChannelNotificationCallbacks,
+	): Promise<void>;
+}
+
 // ChannelProvider implementation
-const channelProvider: ChannelProvider = {
+const channelProvider: MattermostChannelProvider = {
 	id: "mattermost",
 
 	registerCommand(cmd: ChannelCommand): void {
@@ -386,6 +440,53 @@ const channelProvider: ChannelProvider = {
 
 	getBotUsername(): string {
 		return botUsername;
+	},
+
+	async sendNotification(
+		channelId: string,
+		payload: ChannelNotificationPayload,
+		callbacks?: ChannelNotificationCallbacks,
+	): Promise<void> {
+		if (payload.type !== "friend-request") return;
+		if (!client) throw new Error("Mattermost client not initialized");
+
+		const fromLabel = payload.from || payload.pubkey || "unknown peer";
+		const pfx = config.commandPrefix || "!";
+		const text = `**Friend request from ${fromLabel}**\nReply \`${pfx}accept\` or \`${pfx}deny\` to respond.`;
+
+		// Determine the channel owner (non-bot user) for DM channels.
+		// DM channel name format: "userId1__userId2"
+		let ownerUserId = "";
+		try {
+			const channel = await client.getChannel(channelId);
+			if (channel.type === "D") {
+				const parts = channel.name.split("__");
+				ownerUserId = parts.find((id) => id !== botUserId) ?? "";
+			}
+		} catch (_error: unknown) {
+			// Non-critical: fall back to empty ownerUserId (no auth guard)
+		}
+
+		if (!ownerUserId && callbacks) {
+			throw new Error(`Cannot determine owner for channel ${channelId} — sendNotification requires a DM channel`);
+		}
+
+		await client.createPost(channelId, text);
+
+		if (ownerUserId && callbacks) {
+			const key = `${channelId}:${ownerUserId}`;
+			const existing = pendingNotifications.get(key);
+			if (existing) {
+				clearTimeout(existing.timer);
+			}
+			const timer = setTimeout(
+				() => {
+					pendingNotifications.delete(key);
+				},
+				24 * 60 * 60 * 1000,
+			);
+			pendingNotifications.set(key, { channelId, ownerUserId, callbacks, timer });
+		}
 	},
 };
 
@@ -500,6 +601,10 @@ const plugin: WOPRPlugin = {
 
 		registeredCommands.length = 0;
 		registeredParsers.length = 0;
+		for (const entry of pendingNotifications.values()) {
+			clearTimeout(entry.timer);
+		}
+		pendingNotifications.clear();
 
 		botUserId = "";
 		botUsername = "";
