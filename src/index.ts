@@ -284,6 +284,22 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 	// Check if bot is @mentioned
 	const botMentioned = botUsername ? post.message.includes(`@${botUsername}`) : false;
 
+	if (!shouldRespond(post, channelType, botMentioned)) {
+		// Log to session for context even if not responding
+		const isDM = isDMChannel(channelType);
+		const sessionKey = buildSessionKey(post.channel_id, isDM);
+		try {
+			const user = await client.getUser(post.user_id);
+			ctx.logMessage?.(sessionKey, post.message, {
+				from: user.username,
+				channel: { type: "mattermost", id: post.channel_id },
+			});
+		} catch (_error: unknown) {
+			// non-critical
+		}
+		return;
+	}
+
 	// Handle !accept / !deny for pending notifications
 	const prefix = config.commandPrefix || "!";
 	const trimmedMsg = post.message.trim().toLowerCase();
@@ -311,22 +327,6 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 			}
 			return;
 		}
-	}
-
-	if (!shouldRespond(post, channelType, botMentioned)) {
-		// Log to session for context even if not responding
-		const isDM = isDMChannel(channelType);
-		const sessionKey = buildSessionKey(post.channel_id, isDM);
-		try {
-			const user = await client.getUser(post.user_id);
-			ctx.logMessage?.(sessionKey, post.message, {
-				from: user.username,
-				channel: { type: "mattermost", id: post.channel_id },
-			});
-		} catch (_error: unknown) {
-			// non-critical
-		}
-		return;
 	}
 
 	const isDM = isDMChannel(channelType);
