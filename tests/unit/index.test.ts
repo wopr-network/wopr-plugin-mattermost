@@ -344,6 +344,121 @@ describe("channelProvider", () => {
 	});
 });
 
+describe("sendNotification", () => {
+	let channelProv: any;
+
+	async function initWithDisabled() {
+		const ctx = makeCtx({
+			getConfig: vi.fn().mockReturnValue({ enabled: false }),
+		});
+		await plugin.init!(ctx as any);
+		channelProv = (ctx.registerChannelProvider as ReturnType<typeof vi.fn>).mock.calls[0][0];
+		return ctx;
+	}
+
+	afterEach(async () => {
+		vi.unstubAllGlobals();
+		vi.clearAllMocks();
+		await plugin.shutdown?.();
+	});
+
+	it("is a function on the channel provider", async () => {
+		vi.stubGlobal("fetch", vi.fn());
+		await initWithDisabled();
+		expect(typeof channelProv.sendNotification).toBe("function");
+	});
+
+	it("posts a friend-request notification message to the channel", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ id: "bot1", username: "wopr-bot" }),
+			headers: { get: () => null },
+		}));
+
+		const ctx = makeCtx({
+			getConfig: vi.fn().mockReturnValue({
+				serverUrl: "https://mm.example.com",
+				token: "tok",
+			}),
+		});
+		await plugin.init!(ctx as any);
+		channelProv = (ctx.registerChannelProvider as ReturnType<typeof vi.fn>).mock.calls[0][0];
+
+		const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+		fetchMock.mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ id: "notif-post-1", channel_id: "ch1", message: "" }),
+			headers: { get: () => null },
+		});
+
+		const onAccept = vi.fn();
+		const onDeny = vi.fn();
+		await channelProv.sendNotification(
+			"ch1",
+			{ type: "friend-request", from: "alice" },
+			{ onAccept, onDeny },
+		);
+
+		const postCalls = fetchMock.mock.calls.filter(
+			(c: any[]) => c[0].includes("/api/v4/posts") && c[1]?.method === "POST",
+		);
+		expect(postCalls.length).toBeGreaterThanOrEqual(1);
+		const lastPostBody = JSON.parse(postCalls[postCalls.length - 1][1].body);
+		expect(lastPostBody.channel_id).toBe("ch1");
+		expect(lastPostBody.message).toContain("alice");
+		expect(lastPostBody.message).toContain("!accept");
+		expect(lastPostBody.message).toContain("!deny");
+	});
+
+	it("ignores non friend-request notification types", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ id: "bot1", username: "wopr-bot" }),
+			headers: { get: () => null },
+		}));
+
+		const ctx = makeCtx({
+			getConfig: vi.fn().mockReturnValue({
+				serverUrl: "https://mm.example.com",
+				token: "tok",
+			}),
+		});
+		await plugin.init!(ctx as any);
+		channelProv = (ctx.registerChannelProvider as ReturnType<typeof vi.fn>).mock.calls[0][0];
+
+		const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+		fetchMock.mockClear();
+
+		await channelProv.sendNotification("ch1", { type: "other-type" });
+
+		const postCalls = fetchMock.mock.calls.filter(
+			(c: any[]) => c[0].includes("/api/v4/posts") && c[1]?.method === "POST",
+		);
+		expect(postCalls).toHaveLength(0);
+	});
+
+	it("works without callbacks (no-op on accept/deny)", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ id: "bot1", username: "wopr-bot" }),
+			headers: { get: () => null },
+		}));
+
+		const ctx = makeCtx({
+			getConfig: vi.fn().mockReturnValue({
+				serverUrl: "https://mm.example.com",
+				token: "tok",
+			}),
+		});
+		await plugin.init!(ctx as any);
+		channelProv = (ctx.registerChannelProvider as ReturnType<typeof vi.fn>).mock.calls[0][0];
+
+		await expect(
+			channelProv.sendNotification("ch1", { type: "friend-request", from: "bob" }),
+		).resolves.not.toThrow();
+	});
+});
+
 describe("shouldRespond logic (DM and channel policies)", () => {
 	it("open DM policy responds to direct messages", () => {
 		const channelType = "D";

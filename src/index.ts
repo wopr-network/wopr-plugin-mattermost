@@ -9,7 +9,14 @@ import type {
 } from "@wopr-network/plugin-types";
 import winston from "winston";
 import { MattermostClient } from "./mattermost-client.js";
-import type { AgentIdentity, MattermostConfig, MattermostPost, MattermostWsEvent } from "./types.js";
+import type {
+	AgentIdentity,
+	ChannelNotificationCallbacks,
+	ChannelNotificationPayload,
+	MattermostConfig,
+	MattermostPost,
+	MattermostWsEvent,
+} from "./types.js";
 
 // Module-level state (same pattern as Slack/Telegram plugins)
 let ctx: WOPRPluginContext | null = null;
@@ -23,6 +30,7 @@ let logger: winston.Logger | null = null;
 const cleanups: (() => void)[] = [];
 const registeredCommands: ChannelCommand[] = [];
 const registeredParsers: ChannelMessageParser[] = [];
+const pendingNotifications = new Map<string, { channelId: string; callbacks: ChannelNotificationCallbacks }>();
 
 // Initialize winston logger
 function initLogger(): winston.Logger {
@@ -268,6 +276,28 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 	// Check if bot is @mentioned
 	const botMentioned = botUsername ? post.message.includes(`@${botUsername}`) : false;
 
+	// Handle !accept / !deny for pending notifications
+	const prefix = config.commandPrefix || "!";
+	const trimmedMsg = post.message.trim().toLowerCase();
+	if (trimmedMsg === `${prefix}accept` || trimmedMsg === `${prefix}deny`) {
+		const isAccept = trimmedMsg === `${prefix}accept`;
+		for (const [postId, entry] of pendingNotifications) {
+			if (entry.channelId === post.channel_id) {
+				pendingNotifications.delete(postId);
+				try {
+					if (isAccept) {
+						await entry.callbacks.onAccept?.();
+					} else {
+						await entry.callbacks.onDeny?.();
+					}
+				} catch (error: unknown) {
+					logger?.error(`Error in notification ${isAccept ? "accept" : "deny"} callback:`, String(error));
+				}
+				return;
+			}
+		}
+	}
+
 	if (!shouldRespond(post, channelType, botMentioned)) {
 		// Log to session for context even if not responding
 		const isDM = isDMChannel(channelType);
@@ -353,8 +383,17 @@ async function handleWsEvent(event: MattermostWsEvent): Promise<void> {
 	}
 }
 
+// Extended provider type with sendNotification
+interface MattermostChannelProvider extends ChannelProvider {
+	sendNotification(
+		channelId: string,
+		payload: ChannelNotificationPayload,
+		callbacks?: ChannelNotificationCallbacks,
+	): Promise<void>;
+}
+
 // ChannelProvider implementation
-const channelProvider: ChannelProvider = {
+const channelProvider: MattermostChannelProvider = {
 	id: "mattermost",
 
 	registerCommand(cmd: ChannelCommand): void {
@@ -386,6 +425,25 @@ const channelProvider: ChannelProvider = {
 
 	getBotUsername(): string {
 		return botUsername;
+	},
+
+	async sendNotification(
+		channelId: string,
+		payload: ChannelNotificationPayload,
+		callbacks?: ChannelNotificationCallbacks,
+	): Promise<void> {
+		if (payload.type !== "friend-request") return;
+		if (!client) throw new Error("Mattermost client not initialized");
+
+		const fromLabel = payload.from || payload.pubkey || "unknown peer";
+		const pfx = config.commandPrefix || "!";
+		const text = `**Friend request from ${fromLabel}**\nReply \`${pfx}accept\` or \`${pfx}deny\` to respond.`;
+
+		const post = await client.createPost(channelId, text);
+
+		if (callbacks) {
+			pendingNotifications.set(post.id, { channelId, callbacks });
+		}
 	},
 };
 
@@ -500,6 +558,7 @@ const plugin: WOPRPlugin = {
 
 		registeredCommands.length = 0;
 		registeredParsers.length = 0;
+		pendingNotifications.clear();
 
 		botUserId = "";
 		botUsername = "";

@@ -73,3 +73,17 @@ export interface MattermostUser {
 	nickname: string;
 	email: string;
 }
+
+/** Payload describing a notification to display to the channel owner. */
+export interface ChannelNotificationPayload {
+	type: string;
+	from?: string;
+	pubkey?: string;
+	[key: string]: unknown;
+}
+
+/** Callbacks invoked when the owner responds to a notification. */
+export interface ChannelNotificationCallbacks {
+	onAccept?: () => void | Promise<void>;
+	onDeny?: () => void | Promise<void>;
+}
