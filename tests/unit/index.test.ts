@@ -385,7 +385,14 @@ describe("sendNotification", () => {
 		channelProv = (ctx.registerChannelProvider as ReturnType<typeof vi.fn>).mock.calls[0][0];
 
 		const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
-		fetchMock.mockResolvedValue({
+		// getChannel returns DM channel
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			json: () => Promise.resolve({ id: "ch1", type: "D", name: "owner-user-id__bot1" }),
+			headers: { get: () => null },
+		});
+		// createPost returns post
+		fetchMock.mockResolvedValueOnce({
 			ok: true,
 			json: () => Promise.resolve({ id: "notif-post-1", channel_id: "ch1", message: "" }),
 			headers: { get: () => null },

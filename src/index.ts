@@ -300,7 +300,9 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 		return;
 	}
 
-	// Handle !accept / !deny for pending notifications
+	const isDM = isDMChannel(channelType);
+
+	// Handle !accept / !deny for pending notifications (only after shouldRespond)
 	const prefix = config.commandPrefix || "!";
 	const trimmedMsg = post.message.trim().toLowerCase();
 	if (trimmedMsg === `${prefix}accept` || trimmedMsg === `${prefix}deny`) {
@@ -328,8 +330,6 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 			return;
 		}
 	}
-
-	const isDM = isDMChannel(channelType);
 	const sessionKey = buildSessionKey(post.channel_id, isDM);
 
 	let senderUsername: string;
@@ -467,13 +467,13 @@ const channelProvider: MattermostChannelProvider = {
 			// Non-critical: fall back to empty ownerUserId (no auth guard)
 		}
 
-		if (!ownerUserId) {
+		if (!ownerUserId && callbacks) {
 			throw new Error(`Cannot determine owner for channel ${channelId} — sendNotification requires a DM channel`);
 		}
 
 		await client.createPost(channelId, text);
 
-		if (callbacks) {
+		if (ownerUserId && callbacks) {
 			const key = `${channelId}:${ownerUserId}`;
 			const existing = pendingNotifications.get(key);
 			if (existing) {
