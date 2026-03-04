@@ -467,10 +467,18 @@ const channelProvider: MattermostChannelProvider = {
 			// Non-critical: fall back to empty ownerUserId (no auth guard)
 		}
 
+		if (!ownerUserId) {
+			throw new Error(`Cannot determine owner for channel ${channelId} — sendNotification requires a DM channel`);
+		}
+
 		await client.createPost(channelId, text);
 
-		if (callbacks && ownerUserId) {
+		if (callbacks) {
 			const key = `${channelId}:${ownerUserId}`;
+			const existing = pendingNotifications.get(key);
+			if (existing) {
+				clearTimeout(existing.timer);
+			}
 			const timer = setTimeout(
 				() => {
 					pendingNotifications.delete(key);
