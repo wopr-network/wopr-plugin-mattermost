@@ -288,12 +288,14 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 	const prefix = config.commandPrefix || "!";
 	const trimmedMsg = post.message.trim().toLowerCase();
 	if (trimmedMsg === `${prefix}accept` || trimmedMsg === `${prefix}deny`) {
+		// Skip bot/system posts for notification commands
+		if (post.type !== "" || post.user_id === botUserId) {
+			return;
+		}
 		const isAccept = trimmedMsg === `${prefix}accept`;
 		const key = `${post.channel_id}:${post.user_id}`;
 		const entry = pendingNotifications.get(key);
 		if (entry) {
-			pendingNotifications.delete(key);
-			clearTimeout(entry.timer);
 			try {
 				if (isAccept) {
 					await entry.callbacks.onAccept?.();
@@ -302,6 +304,10 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 				}
 			} catch (error: unknown) {
 				logger?.error(`Error in notification ${isAccept ? "accept" : "deny"} callback:`, String(error));
+			} finally {
+				// Clean up after callback completes (success or error)
+				pendingNotifications.delete(key);
+				clearTimeout(entry.timer);
 			}
 			return;
 		}
