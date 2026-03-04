@@ -30,7 +30,15 @@ let logger: winston.Logger | null = null;
 const cleanups: (() => void)[] = [];
 const registeredCommands: ChannelCommand[] = [];
 const registeredParsers: ChannelMessageParser[] = [];
-const pendingNotifications = new Map<string, { channelId: string; callbacks: ChannelNotificationCallbacks }>();
+const pendingNotifications = new Map<
+	string,
+	{
+		channelId: string;
+		ownerUserId: string;
+		callbacks: ChannelNotificationCallbacks;
+		timer: ReturnType<typeof setTimeout>;
+	}
+>();
 
 // Initialize winston logger
 function initLogger(): winston.Logger {
@@ -281,20 +289,21 @@ async function handlePostedEvent(event: MattermostWsEvent): Promise<void> {
 	const trimmedMsg = post.message.trim().toLowerCase();
 	if (trimmedMsg === `${prefix}accept` || trimmedMsg === `${prefix}deny`) {
 		const isAccept = trimmedMsg === `${prefix}accept`;
-		for (const [postId, entry] of pendingNotifications) {
-			if (entry.channelId === post.channel_id) {
-				pendingNotifications.delete(postId);
-				try {
-					if (isAccept) {
-						await entry.callbacks.onAccept?.();
-					} else {
-						await entry.callbacks.onDeny?.();
-					}
-				} catch (error: unknown) {
-					logger?.error(`Error in notification ${isAccept ? "accept" : "deny"} callback:`, String(error));
+		const key = `${post.channel_id}:${post.user_id}`;
+		const entry = pendingNotifications.get(key);
+		if (entry) {
+			pendingNotifications.delete(key);
+			clearTimeout(entry.timer);
+			try {
+				if (isAccept) {
+					await entry.callbacks.onAccept?.();
+				} else {
+					await entry.callbacks.onDeny?.();
 				}
-				return;
+			} catch (error: unknown) {
+				logger?.error(`Error in notification ${isAccept ? "accept" : "deny"} callback:`, String(error));
 			}
+			return;
 		}
 	}
 
@@ -439,10 +448,30 @@ const channelProvider: MattermostChannelProvider = {
 		const pfx = config.commandPrefix || "!";
 		const text = `**Friend request from ${fromLabel}**\nReply \`${pfx}accept\` or \`${pfx}deny\` to respond.`;
 
-		const post = await client.createPost(channelId, text);
+		// Determine the channel owner (non-bot user) for DM channels.
+		// DM channel name format: "userId1__userId2"
+		let ownerUserId = "";
+		try {
+			const channel = await client.getChannel(channelId);
+			if (channel.type === "D") {
+				const parts = channel.name.split("__");
+				ownerUserId = parts.find((id) => id !== botUserId) ?? "";
+			}
+		} catch (_error: unknown) {
+			// Non-critical: fall back to empty ownerUserId (no auth guard)
+		}
 
-		if (callbacks) {
-			pendingNotifications.set(post.id, { channelId, callbacks });
+		await client.createPost(channelId, text);
+
+		if (callbacks && ownerUserId) {
+			const key = `${channelId}:${ownerUserId}`;
+			const timer = setTimeout(
+				() => {
+					pendingNotifications.delete(key);
+				},
+				24 * 60 * 60 * 1000,
+			);
+			pendingNotifications.set(key, { channelId, ownerUserId, callbacks, timer });
 		}
 	},
 };
@@ -558,6 +587,9 @@ const plugin: WOPRPlugin = {
 
 		registeredCommands.length = 0;
 		registeredParsers.length = 0;
+		for (const entry of pendingNotifications.values()) {
+			clearTimeout(entry.timer);
+		}
 		pendingNotifications.clear();
 
 		botUserId = "";

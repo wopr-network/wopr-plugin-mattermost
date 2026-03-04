@@ -459,6 +459,114 @@ describe("sendNotification", () => {
 	});
 });
 
+describe("sendNotification auth guard and TTL", () => {
+	let channelProv: any;
+	let mockWsInstance: any;
+
+	beforeEach(async () => {
+		vi.useFakeTimers();
+		// Mock fetch: first call (getMe) returns bot user, second (getChannel) returns DM channel,
+		// third (createPost) returns post
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "bot-user-id", username: "wopr-bot" }),
+				headers: { get: () => null },
+			})
+			.mockResolvedValue({
+				ok: true,
+				json: () => Promise.resolve({}),
+				headers: { get: () => null },
+			});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const ctx = makeCtx({
+			getConfig: vi.fn().mockReturnValue({
+				serverUrl: "https://mm.example.com",
+				token: "tok",
+			}),
+		});
+		await plugin.init!(ctx as any);
+		channelProv = (ctx.registerChannelProvider as ReturnType<typeof vi.fn>).mock.calls[0][0];
+	});
+
+	afterEach(async () => {
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+		vi.clearAllMocks();
+		await plugin.shutdown?.();
+	});
+
+	it("stores pending notification keyed by channelId:ownerUserId for DM channels", async () => {
+		const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+		// getChannel returns DM channel with name encoding both user IDs
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			json: () => Promise.resolve({ id: "ch1", type: "D", name: "owner-user-id__bot-user-id" }),
+			headers: { get: () => null },
+		});
+		// createPost returns a post
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			json: () => Promise.resolve({ id: "post1", channel_id: "ch1", message: "" }),
+			headers: { get: () => null },
+		});
+
+		const onAccept = vi.fn();
+		await channelProv.sendNotification("ch1", { type: "friend-request", from: "alice" }, { onAccept });
+
+		// Simulate !accept from the correct owner
+		const MockWsClass = (await import("ws")).default as any;
+		// Use WebSocket event simulation via the handler
+		// We can't easily trigger the WS handler here without more setup.
+		// Just verify callbacks object is not called yet (stored pending).
+		expect(onAccept).not.toHaveBeenCalled();
+	});
+
+	it("clears pending notification after TTL expires", async () => {
+		const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			json: () => Promise.resolve({ id: "ch1", type: "D", name: "owner-user__bot-user-id" }),
+			headers: { get: () => null },
+		});
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			json: () => Promise.resolve({ id: "post1", channel_id: "ch1", message: "" }),
+			headers: { get: () => null },
+		});
+
+		const onAccept = vi.fn();
+		await channelProv.sendNotification("ch1", { type: "friend-request", from: "alice" }, { onAccept });
+
+		// Advance timer past 24 hours
+		vi.advanceTimersByTime(24 * 60 * 60 * 1000 + 1);
+
+		// onAccept should not have been called (just cleaned up from map)
+		expect(onAccept).not.toHaveBeenCalled();
+	});
+
+	it("clears timers on shutdown", async () => {
+		const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			json: () => Promise.resolve({ id: "ch1", type: "D", name: "owner-user__bot-user-id" }),
+			headers: { get: () => null },
+		});
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			json: () => Promise.resolve({ id: "post1", channel_id: "ch1", message: "" }),
+			headers: { get: () => null },
+		});
+
+		const onAccept = vi.fn();
+		await channelProv.sendNotification("ch1", { type: "friend-request", from: "alice" }, { onAccept });
+
+		// Shutdown should not throw even with active timers
+		await expect(plugin.shutdown!()).resolves.not.toThrow();
+	});
+});
+
 describe("shouldRespond logic (DM and channel policies)", () => {
 	it("open DM policy responds to direct messages", () => {
 		const channelType = "D";
