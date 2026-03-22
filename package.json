@@ -39,6 +39,7 @@
   ],
   "keywords": [
     "wopr",
+    "wopr-plugin",
     "plugin",
     "mattermost",
     "bot",
